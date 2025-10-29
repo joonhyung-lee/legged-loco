@@ -62,5 +62,14 @@ This repo is used to train low-level locomotion policy of Unitree Go2 and H1 in 
 
     Use `--headless` to enable headless mode. Add `--enable_cameras --video` for headless rendering and video saving.
 
+* skill training
+
+    ```shell
+    python scripts/train_skill.py --skill=h1/velocity/walk_forward --max_iterations=2000 --headless
+    ```
+    python scripts/train_skill.py --skill=go2/velocity/turn_right --skill=go2/manipulation/crawl_low --headless
+    ```
+
+    Use `--list_skills` to display registered presets and `--export_dir` to control where checkpoints are exported.
 ## Add New Environments
 You can add additional environments by placing them under `isaaclab_exts/omni.isaac.leggedloco/omni/isaac/leggedloco/config`.
