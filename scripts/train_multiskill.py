@@ -1,4 +1,52 @@
-"""Sequentially train multiple skills into a single policy checkpoint."""
+"""
+Sequentially train multiple skills into a single policy checkpoint.
+python scripts/train_multiskill.py --list_skills --headless
+python scripts/train_multiskill.py --skill=go2/velocity/turn_right --skill=go2/manipulation/crawl_low --headless
+
+python scripts/train_multiskill.py \
+  --skill=go2/velocity/trot_forward \
+  --skill=go2/velocity/turn_left \
+  --skill=go2/velocity/turn_right \
+  --skill=go2/manipulation/crawl_low \
+  --skill=go2/velocity/forward_left \
+  --skill=go2/velocity/forward_right \
+  --skill=go2/velocity/walk_backward \
+  --skill=go2/velocity/backward_left \
+  --skill=go2/velocity/backward_right \
+  --skill=go2/velocity/strafe_left \
+  --skill=go2/velocity/strafe_right \
+  --iterations_per_skill=3000 \
+  --max_iterations=10000 \
+  --num_envs=4096 \
+  --headless
+  --use_wandb \
+  --wandb_project="legged-loco" \
+  --wandb_entity="rebel-joonhyung-lee-rebellions" \
+  --wandb_run_name="multiskill-experiment-3" \
+
+# With Wandb Logging
+python scripts/train_multiskill.py \
+  --skill=go2/velocity/trot_forward \
+  --skill=go2/velocity/turn_left \
+  --skill=go2/velocity/turn_right \
+  --use_wandb \
+  --wandb_project="legged-loco" \
+  --wandb_entity="rebel-joonhyung-lee-rebellions" \
+  --wandb_run_name="multiskill-experiment-1" \
+  --num_envs=256 \
+  --headless
+
+python scripts/train_multiskill.py \
+  --skill=go2/velocity/trot_forward \
+  --skill=go2/velocity/turn_left \
+  --skill=go2/velocity/turn_right \
+  --use_wandb \
+  --wandb_project="legged-loco" \
+  --wandb_entity="rebel-joonhyung-lee-rebellions" \
+  --wandb_run_name="multiskill-experiment-2" \
+  --num_envs=512 \
+  --headless
+"""
 
 from __future__ import annotations
 
@@ -48,6 +96,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--history_length", type=int, default=0, help="Observation history length.")
     parser.add_argument("--use_cnn", action="store_true", default=None, help="Use depth CNN policy variant.")
     parser.add_argument("--use_rnn", action="store_true", default=False, help="Use recurrent actor-critic.")
+    
+    # Wandb arguments
+    parser.add_argument("--use_wandb", action="store_true", default=False, help="Use Weights & Biases logging.")
+    parser.add_argument("--wandb_project", type=str, default="legged-loco-multiskill", help="Wandb project name.")
+    parser.add_argument("--wandb_entity", type=str, default=None, help="Wandb entity name.")
+    parser.add_argument("--wandb_run_name", type=str, default=None, help="Wandb run name.")
 
     cli_args.add_rsl_rl_args(parser)
     AppLauncher.add_app_launcher_args(parser)
@@ -74,15 +128,17 @@ def main() -> None:
     parser = build_arg_parser()
     args_cli = parser.parse_args()
 
+    # AppLauncher를 먼저 시작 (Isaac Sim 런타임 로드를 위해)
+    app_launcher = AppLauncher(args_cli)
+    simulation_app = app_launcher.app
+
     if args_cli.list_skills:
         list_registered_skills()
+        simulation_app.close()
         return
 
     if not args_cli.skills or len(args_cli.skills) < 2:
         parser.error("Provide at least two --skill entries to train a merged policy.")
-
-    app_launcher = AppLauncher(args_cli)
-    simulation_app = app_launcher.app
 
     # Deferred heavy imports until simulator is live.
     import gymnasium as gym
@@ -98,6 +154,17 @@ def main() -> None:
     from omni.isaac.leggedloco.skills import SkillSpec, get_skill
     from omni.isaac.leggedloco.utils import RslRlVecEnvHistoryWrapper
     from omni.isaac.leggedloco.utils.skill_library import SkillLibrary
+
+    # Initialize wandb if requested
+    if args_cli.use_wandb:
+        import wandb
+        wandb.init(
+            project=args_cli.wandb_project,
+            entity=args_cli.wandb_entity,
+            name=args_cli.wandb_run_name or f"multiskill_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            config=vars(args_cli),
+            tags=["multiskill", "legged-loco"] + [skill.split('/')[0] for skill in args_cli.skills]
+        )
 
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
@@ -122,6 +189,10 @@ def main() -> None:
     try:
         for idx, spec in enumerate(skill_specs):
             print(f"\n[INFO] === Training stage {idx + 1}/{len(skill_specs)}: {spec.skill_id} ===")
+            
+            # Log current skill to wandb
+            if args_cli.use_wandb:
+                wandb.log({"current_skill": spec.skill_id, "skill_stage": idx + 1, "total_skills": len(skill_specs)})
 
             env_cfg = parse_env_cfg(spec.gym_id, num_envs=args_cli.num_envs)
             agent_cfg = cli_args.parse_rsl_rl_cfg(spec.gym_id, args_cli)
@@ -170,6 +241,42 @@ def main() -> None:
                 dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
                 dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
 
+                # Custom training loop with wandb logging
+                if args_cli.use_wandb:
+                    # Override the learn method to add wandb logging
+                    original_learn = runner.learn
+                    
+                    def learn_with_wandb(num_learning_iterations, init_at_random_ep_len=True):
+                        for it in range(num_learning_iterations):
+                            # Run one iteration
+                            runner.collect_rollout()
+                            runner.update()
+                            
+                            # Log metrics to wandb
+                            if it % 10 == 0:  # Log every 10 iterations
+                                metrics = {
+                                    f"skill_{idx+1}_{spec.skill_id}/iteration": it,
+                                    f"skill_{idx+1}_{spec.skill_id}/value_loss": runner.value_loss,
+                                    f"skill_{idx+1}_{spec.skill_id}/surrogate_loss": runner.surrogate_loss,
+                                    f"skill_{idx+1}_{spec.skill_id}/mean_reward": runner.mean_reward,
+                                    f"skill_{idx+1}_{spec.skill_id}/mean_episode_length": runner.mean_episode_length,
+                                    f"skill_{idx+1}_{spec.skill_id}/total_timesteps": runner.total_timesteps,
+                                }
+                                
+                                # Add reward components if available
+                                if hasattr(runner, 'reward_components'):
+                                    for key, value in runner.reward_components.items():
+                                        metrics[f"skill_{idx+1}_{spec.skill_id}/reward_{key}"] = value
+                                
+                                # Add curriculum metrics if available
+                                if hasattr(runner, 'curriculum_metrics'):
+                                    for key, value in runner.curriculum_metrics.items():
+                                        metrics[f"skill_{idx+1}_{spec.skill_id}/curriculum_{key}"] = value
+                                
+                                wandb.log(metrics)
+                    
+                    runner.learn = learn_with_wandb
+                
                 runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
 
                 last_checkpoint = os.path.join(log_dir, f"model_{runner.current_learning_iteration}.pt")
@@ -214,6 +321,10 @@ def main() -> None:
 
     print("\n[INFO] Combined skill exported to:", policy_path)
     print("[INFO] Metadata includes the training order for reproducibility.")
+    
+    # Finish wandb run
+    if args_cli.use_wandb:
+        wandb.finish()
 
 
 if __name__ == "__main__":

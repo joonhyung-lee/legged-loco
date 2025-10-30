@@ -32,14 +32,14 @@ This repo is used to train low-level locomotion policy of Unitree Go2 and H1 in 
     git clone git@github.com:yang-zj1026/IsaacLab.git
     cd IsaacLab
     cd source/extensions
-    ln -s {THIS_REPO_DIR}/isaaclab_exts/omni.isaac.leggedloco .
+    ln -s /home/joonhyunglee/code-snippet/rtc/legged-loco/isaaclab_exts/omni.isaac.leggedloco .
     cd ../..
     ```
 
 5. Run the Isaac Lab installer script and additionally install rsl rl in this repo.
     ```shell
     ./isaaclab.sh -i none
-    ./isaaclab.sh -p -m pip install -e {THIS_REPO_DIR}/rsl_rl
+    ./isaaclab.sh -p -m pip install -e /home/joonhyunglee/code-snippet/rtc/legged-loco/rsl_rl
     cd ..
     ```
 
